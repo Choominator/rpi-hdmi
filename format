@@ -1,0 +1,13 @@
+#!/bin/sh
+
+if test -z "`which rustfmt`" -o -z "`rustfmt +nightly -V 2>/dev/null`"; then
+    echo "Component rustfmt does not appear to be properly installed for nightly Rust." >&2
+    exit 1
+fi
+
+cd "`dirname \"$0\"`" || exit 1
+
+name="rpi-hdmi"
+
+echo "Formatting $name..."
+find src -name '*.rs' | xargs rustfmt +nightly --edition 2021 || exit 1

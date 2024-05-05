@@ -1,0 +1,39 @@
+#!/bin/sh
+
+if test -z "`which rustc`" -o -z "`rustc +nightly -V 2>/dev/null`"; then
+    echo "Nightly Rust does not appear to be properly installed." >&2
+    exit 1
+fi
+
+cd "`dirname \"$0\"`" || exit 1
+
+name="rpi-hdmi"
+depsdir="deps"
+sysroot="`rustc +nightly --print sysroot`"
+flags="+nightly --edition 2021 --target aarch64-rpi4-none.json -C opt-level=3 -L \"$depsdir\""
+libflags="--crate-type lib --emit link,metadata --out-dir \"$depsdir\""
+binflags="-o boot/kernel8.img"
+rustsrcdir="$sysroot/lib/rustlib/src/rust/library"
+
+if test ! -f "$rustsrcdir/core/src/lib.rs" -o ! -f "$rustsrcdir/alloc/src/lib.rs"; then
+    echo "Component rust-src does not appear to be properly installed for nightly Rust." >&2
+    exit 1
+fi
+
+if test ! -f "$depsdir/libcore.rmeta" -o "$rustsrcdir/core/src/lib.rs" -nt "$depsdir/libcore.rmeta"; then
+    echo "Compiling core..."
+    eval rustc $flags --crate-name core $libflags "$rustsrcdir/core/src/lib.rs" || exit 1
+fi
+
+if test ! -f "$depsdir/libcompiler_builtins.rmeta" -o "src/builtin.rs" -nt "$depsdir/libcompiler_builtins.rmeta" -o "$depsdir/libcore.rmeta" -nt "$depsdir/libcompiler_builtins.rmeta"; then
+    echo "Compiling compiler_builtins..."
+    eval rustc $flags --crate-name compiler_builtins $libflags src/builtin.rs || exit 1
+fi
+
+echo "Compiling $name..."
+if test -z "`which clippy-driver`" -o -z "`clippy-driver +nightly -V 2>/dev/null`"; then
+    echo "Warning: Clippy for nightly Rust does not appear to be properly installed." >&2
+    eval rustc $flags $binflags $cfgflags src/main.rs || exit 1
+else
+    eval clippy-driver $flags $binflags $cfgflags src/main.rs || exit 1
+fi
