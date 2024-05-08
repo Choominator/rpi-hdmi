@@ -17,8 +17,11 @@ const AU_PKTCFG: *mut u32 = (BASE + 0xB8) as _;
 const IF_CFG: *mut u32 = (BASE + 0xBC) as _;
 /// Info frame status register.
 const IF_STATUS: *mut u32 = (BASE + 0xC4) as _;
+/// Content type reporting packet configuration register.
 const CRP_CFG: *mut u32 = (BASE + 0xC8) as _;
+/// Clock to service register 0.
 const CTS0: *mut u32 = (BASE + 0xCC) as _;
+/// Clock to service register 1.
 const CTS1: *mut u32 = (BASE + 0xD0) as _;
 /// Info frame packet register block base.
 const IF_BASE: usize = 0x7EF01B00;
@@ -32,7 +35,7 @@ const HD_AU_CTL: *mut u32 = (HD_BASE + 0x10) as _;
 const HD_AU_THR: *mut u32 = (HD_BASE + 0x14) as _;
 /// HD audio format register.
 const HD_AU_FMT: *mut u32 = (HD_BASE + 0x18) as _;
-/// HD audio data register.
+/// HD audio data FIFO register.
 const HD_AU_DATA: *mut u32 = (HD_BASE + 0x1C) as _;
 /// HD audio clock division register.
 const HD_AU_SMP: *mut u32 = (HD_BASE + 0x20) as _;
@@ -48,14 +51,14 @@ const PITCH: usize = SCREEN_WIDTH * DEPTH;
 const VPITCH: usize = 1;
 /// Set plane property tag.
 const SET_PLANE_TAG: u32 = 0x48015;
-/// Display ID.
+/// Display ID for HDMI 0.
 const DISP_ID: u8 = 2;
 /// Plane image type XRGB8888 setting.
 const IMG_XRGB8888_TYPE: u8 = 44;
 /// CPRMAN clock rate.
-const CLOCK_RATE: u32 = 54000000;
-/// Pixel clock rate in milliseconds.
-const PIXCLOCK_RATE: u32 = 148500;
+const CLOCK_FREQ: u32 = 54000000;
+/// Pixel clock rate.
+const PIXCLOCK_FREQ: u32 = 148500000;
 /// Audio sample rate.
 const SAMPLE_RATE: u32 = 48000;
 /// Data request device ID.
@@ -64,6 +67,22 @@ const DREQ: u32 = 10;
 const VID_BUF_LEN: usize = SCREEN_WIDTH * SCREEN_HEIGHT;
 /// Audio buffer length in words.
 const AU_BUF_LEN: usize = (SAMPLE_RATE * 2) as _;
+
+// Generates a value with the specified bit fields.
+macro_rules! bits {
+    {$start:literal ..= $end:literal => $val:expr $(,)?} => {{
+        assert!($val < 1 << ($end - $start + 1), "Value 0x{:X} does not fit in a {} bit wide field", $val, $end - $start + 1);
+        $val << $start
+    }};
+    {$bit:literal => $val:expr $(,)?} => {{
+        assert!($val < 2, "Value {:X} does not fit in a 1 bit wide field", $val);
+        $val << $bit
+    }};
+    {$start:literal $(..= $end:literal)? => $val:expr,
+        $($startargs:literal $(..= $endargs:literal)? => $valargs:expr),+ $(,)?} => {{
+        bits!($start $(..= $end)? => $val) | bits!($($startargs $(..= $endargs)? => $valargs),+)
+    }};
+}
 
 /// Set plane property.
 #[repr(C)]
@@ -156,28 +175,134 @@ pub fn init()
     let abuf = alloc::<[u32; AU_BUF_LEN]>();
     synthesize(unsafe { &mut *abuf });
     unsafe {
-        HD_AU_CTL.write_volatile(0xB12E);
+        let hd_au_ctl = bits! {
+            // Clear starvation bit.
+            15 => 1,
+            // Not sure what this does, but it's set on Linux.
+            13 => 1,
+            // Not sure what this does, but it's set on Linux.
+            12 => 1,
+            // Compute parity bits for IEC958 subframes.
+            8 => 1,
+            // Channel count.
+            4 ..= 7 => 2,
+            // Enable HDMI audio.
+            3 => 1,
+            // Clear underflow error bit.
+            2 => 1,
+            // Clear overflow error bit.
+            1 => 1,
+        };
+        HD_AU_CTL.write_volatile(hd_au_ctl);
+        // Info frames must only b updated when disabled with their register block
+        // enabled.
         let ifcfg = IF_CFG.read_volatile();
-        IF_CFG.write_volatile(ifcfg & !0x10);
-        while IF_STATUS.read_volatile() & 0x10 != 0 {
+        let ifcfgset = bits! {
+            // Enable info frame register block.
+            16 => 1,
+        };
+        let ifcfgclr = bits! {
+            // Audio info frame.
+            4 => 1,
+        };
+        IF_CFG.write_volatile(ifcfg & !ifcfgclr | ifcfgset);
+        while IF_STATUS.read_volatile() & ifcfgclr != 0 {
             spin_loop();
         }
+        // Audio info frame offset (info frame 4, register stride 9).
         let offset = 4 * 9;
-        IF_START.add(offset).write_volatile(0xA0184);
-        IF_START.add(offset + 1).write_volatile(0x170);
+        let if40 = bits! {
+            // Info frame length.
+            16 ..= 23 => 10,
+            // Info frame version.
+            8 ..= 15 => 1,
+            // Info frame type (audio).
+            0 ..= 7 => 0x84,
+        };
+        IF_START.add(offset).write_volatile(if40);
+        let if41 = bits! {
+            // Allocate channel 1.
+            25 => 1,
+            // Allocate channel 0.
+            24 => 1,
+            // Sample rate (48000Hz).
+            10 ..= 12 => 3,
+            // Sample size (16 bit).
+            8 ..= 9 => 1,
+            // Coding type (PCM).
+            4 ..= 7 => 1,
+            // Last channel index.
+            0 ..= 2 => 1,
+        };
+        IF_START.add(offset + 1).write_volatile(if41);
+        // The hardware computes the info frame checksums using their whole register
+        // blocks, so all the remaining unused registers must be zeroed.
         for idx in 2 .. 9 {
             IF_START.add(offset + idx).write_volatile(0);
         }
-        IF_CFG.write_volatile(ifcfg | 0x10010);
-        AU_CFG.write_volatile(0xC000003);
-        AU_PKTCFG.write_volatile(0x21002003);
-        AU_CHMAP.write_volatile(0x10);
-        HD_AU_FMT.write_volatile(0x20900);
-        HD_AU_THR.write_volatile(0x10101C1C);
-        HD_AU_SMP.write_volatile((CLOCK_RATE / SAMPLE_RATE * 2) << 8);
+        let ifcfgset = ifcfgclr;
+        IF_CFG.write_volatile(ifcfg | ifcfgset);
+        let au_cfg = bits! {
+            // Not sure what this does, but Linux sets it.
+            27 => 1,
+            // Not sure what this does, but Linux sets it.
+            26 => 1,
+            // Enable channel 1.
+            1 => 1,
+            // Enable channel 0.
+            0 => 1,
+        };
+        AU_CFG.write_volatile(au_cfg);
+        let au_pktcfg = bits! {
+            // Zero data on flat sample.
+            29 => 1,
+            // Zero data on inactive channels.
+            24 => 1,
+            // B frame preamble.
+            10 ..= 13 => 0x8,
+            // Channel 1.
+            1 => 1,
+            // Channel 0.
+            0 => 1,
+        };
+        AU_PKTCFG.write_volatile(au_pktcfg);
+        let au_chmap = bits! {
+            // Map channel 1 to channel 1.
+            4 ..= 6 => 1,
+            // Map channel 0 to channel 0.
+            0 ..= 2 => 0,
+        };
+        AU_CHMAP.write_volatile(au_chmap);
+        let hd_au_fmt = bits! {
+            // Coding type (PCM).
+            16 ..= 23 => 2,
+            // Sample rate (48000).
+            8 ..= 15 => 9,
+        };
+        HD_AU_FMT.write_volatile(hd_au_fmt);
+        let hd_au_thr = bits! {
+            // Set panic data request threshold.
+            24 ..= 31 => 16,
+            // Clear panic data request threshold.
+            16 ..= 23 => 16,
+            // Set normal data request threshold.
+            8 ..= 15 => 28,
+            // Clear normal data request threshold.
+            0 ..= 7 => 28,
+        };
+        HD_AU_THR.write_volatile(hd_au_thr);
+        let hd_au_smp = bits! {
+            // Numerator.
+            8 ..= 31 => CLOCK_FREQ / SAMPLE_RATE * 2,
+            // Denominator (1).
+            0 ..= 7 => 0,
+        };
+        HD_AU_SMP.write_volatile(hd_au_smp);
+        // I don't know how to operate the following registers, so I'm setting them to
+        // the same values as Linux does for the same audio and video configuration.
         CRP_CFG.write_volatile(0x1000000 | (SAMPLE_RATE * 128 / 1000));
-        CTS0.write_volatile(PIXCLOCK_RATE);
-        CTS1.write_volatile(PIXCLOCK_RATE);
+        CTS0.write_volatile(PIXCLOCK_FREQ / 1000);
+        CTS1.write_volatile(PIXCLOCK_FREQ / 1000);
         println!("Audio initialized");
         setup_sender(&*abuf, HD_AU_DATA, DREQ);
     }
@@ -187,39 +312,50 @@ pub fn init()
 /// channels.
 fn synthesize(buf: &mut [u32; AU_BUF_LEN])
 {
+    // 192 channel status bits.
     let mut cs = [0; 24];
-    cs[0 .. 5].copy_from_slice(&[0x4, 0x50, 0x0, 0x2, 0xD2]);
-    for (sample, output) in buf.iter_mut().enumerate() {
-        let period = if sample & 0x1 == 0 { 240 } else { 160 };
-        let mut val = if (sample / period) & 0x1 == 1 {
-            0x3FFF << 12
+    let csconf = [0x4,  // SPDIF, PCM, no copyright, no emphasis.
+                  0x44, // Software broadcast.
+                  0x0,  // Channel (to fill in later).
+                  0x2,  // 48000Hz, 1000ppm.
+                  0xD2  /* 16 bit sample size, 48000Hz original frequency. */];
+    cs[0 .. 5].copy_from_slice(&csconf);
+    for (idx, output) in buf.iter_mut().enumerate() {
+        // We're dealing with twice as many frames here since we are synthesizing for
+        // two channels one at a time, so the math must take that into account.
+        let halfperiod = if idx & 0x1 == 0 {
+            SAMPLE_RATE as usize / 200
         } else {
-            0x0C000 << 12
+            SAMPLE_RATE as usize / 300
         };
-        let subframe = sample % 384;
-        if subframe == 0 {
-            // Send the B frame marker configured earlier.
-            val |= 0x8;
-        } else if subframe & 0x1 == 0 {
-            // M subframe.
-            val |= 0x2;
+        let sample = if (idx / halfperiod) & 0x1 == 1 {
+            // Positive phase.
+            0x3FFF
         } else {
-            // W subframe.
-            val |= 0x4;
-        }
-        let byte = subframe >> 4;
-        let bit = (subframe >> 1) & 0x7;
-        let cs = (cs[byte] >> bit) & 0x1;
-        val |= cs << 30;
-        if subframe == 17 || subframe == 24 || subframe == 27 {
-            // Set the channel bits.
-            val |= 1 << 30;
-        }
-        // Add the parity bit.
-        for bit in 4 .. 31 {
-            val ^= ((val >> bit) & 0x1) << 31;
-        }
-        *output = val;
+            // Negative phase.
+            0x0C000
+        };
+        let blockidx = idx % (192 * 2);
+        // Mark B subframes according to the configuration in the AU_PKTCFG register.
+        let preamble = ((blockidx == 0) as u32) << 3;
+        let byte = blockidx >> 4;
+        let bit = (blockidx >> 1) & 0x7;
+        let cs = if blockidx == 16 * 2 + 1 || blockidx == 20 * 2 + 1 {
+            // Nibbles 4 and 5 of channel status contain the source and destination channel
+            // indices. Channel 0 has index 0 so nothing needs to be done, but channel 1
+            // must have its index bits set appropriately.
+            0x1
+        } else {
+            (cs[byte] >> bit) & 0x1
+        };
+        *output = bits! {
+            // 8 * 24 channel status bits spread across 192 subframes per channel.
+            30 => cs,
+            // Signed 16 bit audio sample.
+            12 ..= 27 => sample,
+            // Preamble.
+            0 ..= 3 => preamble,
+        };
     }
     fence(Ordering::Release);
 }

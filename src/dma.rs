@@ -5,6 +5,7 @@
 
 use core::marker::PhantomPinned;
 use core::mem::size_of_val;
+use core::sync::atomic::{fence, Ordering};
 
 use crate::vcalloc::alloc;
 use crate::{mbox, println};
@@ -60,9 +61,10 @@ pub unsafe fn setup_sender<T>(src: &[T], dst: *mut u32, dreq: u32)
                          next: cb as usize as u32,
                          _pad: [0; 2],
                          _pin: PhantomPinned };
-    let out: u32;
-    mbox! {GET_DMA_TAG: _ => out};
-    let avail = out & NORMAL_MASK;
+    fence(Ordering::Release);
+    let dma_out: u32;
+    mbox! {GET_DMA_TAG: _ => dma_out};
+    let avail = dma_out & NORMAL_MASK;
     let mut chan = CHAN_COUNT;
     for bit in 0 .. CHAN_COUNT {
         if avail & (1 << bit) != 0 {
