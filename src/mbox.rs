@@ -1,5 +1,7 @@
 //! Video core mailbox interface.
 
+#![allow(dead_code)]
+
 use core::cmp::max;
 use core::hint::spin_loop;
 use core::mem::{align_of, size_of, size_of_val};
@@ -17,20 +19,20 @@ use crate::{cleanup_cache, invalidate_cache};
 /// fulfilled.
 #[macro_export]
 macro_rules! mbox {
-    {msg = $msg:ident , $tag:ident : $input:expr => _ $(, $($tail:tt)*)?} => {{
+    {msg = $msg:ident , $tag:tt : $input:expr => _ $(, $($tail:tt)*)?} => {{
         let prop = $crate::mbox::Property::new($tag, $input);
         $msg.add_property(&prop);
         $crate::mbox! {msg = $msg $(,$($tail)*)?};
         prop.nop(());
     }};
-    {msg = $msg:ident , $tag:ident : _ => $output:expr $(, $($tail:tt)*)?} => {{
+    {msg = $msg:ident , $tag:tt : _ => $output:expr $(, $($tail:tt)*)?} => {{
         let mut prop = $crate::mbox::Property::new($tag, ());
         $msg.add_property(&prop);
         $crate::mbox! {msg = $msg $(,$($tail)*)?};
         prop = $msg.find_property($tag);
         $output = prop.payload();
     }};
-    {msg = $msg:ident , $tag:ident : $input:expr => $output:expr $(, $($tail:tt)*)?} => {{
+    {msg = $msg:ident , $tag:tt : $input:expr => $output:expr $(, $($tail:tt)*)?} => {{
         let mut prop = $crate::mbox::Property::new($tag, $input);
         $msg.add_property(&prop);
         $crate::mbox! {msg = $msg $(,$($tail)*)?};
@@ -40,14 +42,14 @@ macro_rules! mbox {
     {msg = $msg:ident} => {{
         $crate::mbox::Mailbox.exchange(&mut $msg);
     }};
-    {$($tag:ident : $input:tt => $output:tt),* $(,)?} => {{
+    {$($tag:tt : $input:tt => $output:tt),* $(,)?} => {{
         let mut msg = $crate::mbox::Message::new();
         $crate::mbox! {msg = msg, $($tag: $input => $output),*};
     }};
 }
 
 /// Base address of the video core mailbox registers.
-const BASE: usize = 0x7E00B880;
+const BASE: usize = 0x107C013880;
 /// Inbox data register.
 const INBOX_DATA: *const u32 = BASE as _;
 /// Inbox status register.

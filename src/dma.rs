@@ -7,23 +7,15 @@ use core::marker::PhantomPinned;
 use core::mem::size_of_val;
 use core::sync::atomic::{fence, Ordering};
 
-use crate::vcalloc::alloc;
-use crate::{mbox, println};
+use crate::println;
+use crate::scalloc::alloc;
 
-/// Get available DMA channels tag.
-const GET_DMA_TAG: u32 = 0x60001;
-/// Normal DMA channels mask.
-const NORMAL_MASK: u32 = 0x7F;
-/// Total number of DMA channels.
-const CHAN_COUNT: u32 = 16;
 /// Base address.
-const BASE: usize = 0x7E007000;
+const BASE: usize = 0x1000010000;
 /// Channel 0 control and status register.
 const CH0_CS: *mut u32 = BASE as _;
 /// Channel 0 control block register.
 const CH0_CB: *mut u32 = (BASE + 0x4) as _;
-/// Channel address stride.
-const STRIDE: usize = 0x100;
 
 /// Control block.
 #[repr(align(32), C)]
@@ -32,15 +24,15 @@ struct ControlBlock
 {
     /// Transfer information.
     ti: u32,
-    /// Source address.
+    /// Lower 32 bits of source address.
     src: u32,
-    /// Destination address.
+    /// Lower 32 bits of destination address.
     dst: u32,
     /// Length in bytes.
     len: u32,
-    /// Stride for 2D access.
-    stride: u32,
-    /// Next control block address.
+    /// High 8 bits of source and destination addresses.
+    hisrcdst: u32,
+    /// Next control block address shifted 5 bits to the right.
     next: u32,
     /// Padding.
     _pad: [u32; 2],
@@ -51,31 +43,30 @@ struct ControlBlock
 // Sets up a DMA channel to repeatedly send data to a peripheral.
 pub unsafe fn setup_sender<T>(src: &[T], dst: *mut u32, dreq: u32)
 {
-    let cb = alloc::<ControlBlock>();
     let dreq = dreq & 0x1F;
-    *cb = ControlBlock { ti: 0x348 | (dreq << 16),
-                         src: src.as_ptr() as usize as u32,
-                         dst: dst as usize as u32,
-                         len: size_of_val(src) as u32,
-                         stride: 0,
-                         next: cb as usize as u32,
-                         _pad: [0; 2],
-                         _pin: PhantomPinned };
+    let cb0 = alloc::<ControlBlock>();
+    let cb1 = alloc::<ControlBlock>();
+    *cb0 = ControlBlock { ti: 0xF348 | (dreq << 16),
+                          src: src.as_ptr() as usize as u32,
+                          dst: (dst as usize & 0xFFFFFFFF) as u32,
+                          len: size_of_val(src) as u32 / 2,
+                          hisrcdst: ((dst as usize >> 24) as u32 & 0xFF00)
+                                    | (src.as_ptr() as usize >> 32) as u32 & 0xFF,
+                          next: (cb1 as usize >> 5) as u32,
+                          _pad: [0; 2],
+                          _pin: PhantomPinned };
+    *cb1 = ControlBlock { ti: 0xF348 | (dreq << 16),
+                          src: src.as_ptr() as usize as u32 + (*cb0).len,
+                          dst: (dst as usize & 0xFFFFFFFF) as u32,
+                          len: size_of_val(src) as u32 / 2,
+                          hisrcdst: ((dst as usize >> 24) as u32 & 0xFF00)
+                                    | (src.as_ptr() as usize >> 32) as u32 & 0xFF,
+                          next: (cb0 as usize >> 5) as u32,
+                          _pad: [0; 2],
+                          _pin: PhantomPinned };
     fence(Ordering::Release);
-    let dma_out: u32;
-    mbox! {GET_DMA_TAG: _ => dma_out};
-    let avail = dma_out & NORMAL_MASK;
-    let mut chan = CHAN_COUNT;
-    for bit in 0 .. CHAN_COUNT {
-        if avail & (1 << bit) != 0 {
-            chan = bit;
-            break;
-        }
-    }
-    assert!(chan < CHAN_COUNT, "No available normal DMA channels");
-    let offset = STRIDE / 4 * chan as usize;
-    CH0_CS.add(offset).write_volatile(0x80000000);
-    CH0_CB.add(offset).write_volatile(cb as usize as u32);
-    CH0_CS.add(offset).write_volatile(0x20A50007);
-    println!("Initialized DMA channel #{chan}");
+    CH0_CS.write_volatile(0x80000000);
+    CH0_CB.write_volatile(cb0 as usize as u32 >> 5);
+    CH0_CS.write_volatile(0x20A50007);
+    println!("Initialized DMA channel #0");
 }

@@ -1,9 +1,9 @@
+os_check=0
 disable_overscan=1
-arm_boost=1
 disable_commandline_tags=1
-arm_64bit=1
 gpu_mem=16
-force_turbo=1
 ignore_lcd=1
 hdmi_force_mode=16
 hdmi_force_hotplug=1
+pciex4_reset=0
+#enable_jtag_gpio=1

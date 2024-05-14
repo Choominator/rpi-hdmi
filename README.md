@@ -1,10 +1,8 @@
 # Bare Metal Raspberry Pi HDMI Audio
 
-This project contains a working implementation of a bare metal HDMI audio driver for the Raspberry Pi 4.
+This project contains a working implementation of a bare metal HDMI audio driver for the Raspberry Pi 5. An implementation for the Raspberry Pi 4 can be found on the `rpi4` branch.
 
 Running this code should result in the Raspberry Pi displaying a 1920x1080 green screen over HDMI 0 and playing a square wave audio tone at 200Hz on one channel and another at 300Hz on the other channel. It works at least with the displays on which I tested it, however since I'm not sure I'm respecting the HDMI specification, I cannot guarantee that it works with every display.
-
-In the future I might include code for the Raspberry Pi 5 as well, if and when I manage to figure how to do it.
 
 ## Compilation
 
@@ -32,6 +30,8 @@ Hopefully the compilation will succeed and a `kernel8.img` binary will be genera
 
 ## Running
 
+This project is likely to panic with older versions of the firmware, since originally the Raspberry Pi 5 was booting bare metal code at 0x200000, and the code expects to run from 0x80000, so if it panics, try updating to the latest stable version of the firmware.
+
 The easiest way to run bare metal code on the Raspberry Pi is through PXE, which requires properly configured DHCP and TFTP servers. One service that can be used for the task, which is actually what I use on MacOS, is `dnsmasq`, and [configuration instructions](https://www.raspberrypi.com/documentation/computers/remote-access.html#network-boot-your-raspberry-pi) for it can be found on the official Raspberry Pi website.
 
 Below is my `dnsmasq.conf` for reference:
@@ -49,7 +49,7 @@ My main source of information for this project is the Video Core Kernel Mode Set
 
 The following is a list of all the Linux kernel source files from which I extracted all the information that I needed to build this driver:
 
-* `arch/arm/boot/dts/bcm2711.dtsi`
+* `arch/arm/boot/dts/broadcom/bcm2712.dtsi`
 * `drivers/gpu/drm/vc4/vc4_regs.h`
 * `drivers/gpu/drm/vc4/vc4_hdmi_regs.h`
 * `drivers/gpu/drm/vc4/vc4_hdmi.c`

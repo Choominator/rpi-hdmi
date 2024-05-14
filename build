@@ -10,7 +10,7 @@ cd "`dirname \"$0\"`" || exit 1
 name="rpi-hdmi"
 depsdir="deps"
 sysroot="`rustc +nightly --print sysroot`"
-flags="+nightly --edition 2021 --target aarch64-rpi4-none.json -C opt-level=3 -L \"$depsdir\""
+flags="+nightly --edition 2021 --target aarch64-rpi5-none.json -C opt-level=3 -L \"$depsdir\""
 libflags="--crate-type lib --emit link,metadata --out-dir \"$depsdir\""
 binflags="-o boot/kernel8.img"
 rustsrcdir="$sysroot/lib/rustlib/src/rust/library"

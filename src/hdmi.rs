@@ -2,33 +2,33 @@ use core::hint::spin_loop;
 use core::sync::atomic::{fence, Ordering};
 
 use crate::dma::setup_sender;
-use crate::vcalloc::alloc;
+use crate::scalloc::alloc;
 use crate::{mbox, println};
 
 /// Core register block base.
-const BASE: usize = 0x7EF00700;
+const BASE: usize = 0x107C701400;
 /// Audio channel map.
-const AU_CHMAP: *mut u32 = (BASE + 0x9C) as _;
+const AU_CHMAP: *mut u32 = (BASE + 0xA4) as _;
 /// Audio configuration register.
-const AU_CFG: *mut u32 = (BASE + 0xA0) as _;
+const AU_CFG: *mut u32 = (BASE + 0xA8) as _;
 /// Packet configuration register.
-const AU_PKTCFG: *mut u32 = (BASE + 0xB8) as _;
+const AU_PKTCFG: *mut u32 = (BASE + 0xC0) as _;
 /// Info frame configuration register.
-const IF_CFG: *mut u32 = (BASE + 0xBC) as _;
+const IF_CFG: *mut u32 = (BASE + 0xC4) as _;
 /// Info frame status register.
-const IF_STATUS: *mut u32 = (BASE + 0xC4) as _;
+const IF_STATUS: *mut u32 = (BASE + 0xCC) as _;
 /// Content type reporting packet configuration register.
-const CRP_CFG: *mut u32 = (BASE + 0xC8) as _;
+const CRP_CFG: *mut u32 = (BASE + 0xD0) as _;
 /// Clock to service register 0.
-const CTS0: *mut u32 = (BASE + 0xCC) as _;
+const CTS0: *mut u32 = (BASE + 0xD4) as _;
 /// Clock to service register 1.
-const CTS1: *mut u32 = (BASE + 0xD0) as _;
+const CTS1: *mut u32 = (BASE + 0xD8) as _;
 /// Info frame packet register block base.
-const IF_BASE: usize = 0x7EF01B00;
+const IF_BASE: usize = 0x107C703800;
 /// First register of the info frame packet block.
 const IF_START: *mut u32 = IF_BASE as _;
 /// HD register block base.
-const HD_BASE: usize = 0x7EF20000;
+const HD_BASE: usize = 0x107C720000;
 /// HD audio control register.
 const HD_AU_CTL: *mut u32 = (HD_BASE + 0x10) as _;
 /// HD audio DMA DREQ thresholds configuration register.
@@ -39,22 +39,6 @@ const HD_AU_FMT: *mut u32 = (HD_BASE + 0x18) as _;
 const HD_AU_DATA: *mut u32 = (HD_BASE + 0x1C) as _;
 /// HD audio clock division register.
 const HD_AU_SMP: *mut u32 = (HD_BASE + 0x20) as _;
-/// Screen width in pixels.
-const SCREEN_WIDTH: usize = 1920;
-/// Screen height in pixels.
-const SCREEN_HEIGHT: usize = 1080;
-/// Pixel depth in bytes.
-const DEPTH: usize = 4;
-/// Horizontal pitch in bytes.
-const PITCH: usize = SCREEN_WIDTH * DEPTH;
-/// Vertical pitch in rows.
-const VPITCH: usize = 1;
-/// Set plane property tag.
-const SET_PLANE_TAG: u32 = 0x48015;
-/// Display ID for HDMI 0.
-const DISP_ID: u8 = 2;
-/// Plane image type XRGB8888 setting.
-const IMG_XRGB8888_TYPE: u8 = 44;
 /// CPRMAN clock rate.
 const CLOCK_FREQ: u32 = 54000000;
 /// Pixel clock rate.
@@ -63,10 +47,12 @@ const PIXCLOCK_FREQ: u32 = 148500000;
 const SAMPLE_RATE: u32 = 48000;
 /// Data request device ID.
 const DREQ: u32 = 10;
-/// Video buffer length in words.
-const VID_BUF_LEN: usize = SCREEN_WIDTH * SCREEN_HEIGHT;
-/// Audio buffer length in words.
-const AU_BUF_LEN: usize = (SAMPLE_RATE * 2) as _;
+/// Audio buffer length in words (must fit in a 128KB buffer).
+const AU_BUF_LEN: usize = (SAMPLE_RATE * 2 / 4) as _;
+/// Get frame buffer memory property tag.
+const GET_FB_TAG: u32 = 0x40001;
+/// Get frame buffer depth tag.
+const GET_FB_DEPTH_TAG: u32 = 0x40005;
 
 // Generates a value with the specified bit fields.
 macro_rules! bits {
@@ -84,89 +70,34 @@ macro_rules! bits {
     }};
 }
 
-/// Set plane property.
-#[repr(C)]
-#[derive(Clone, Copy, Debug)]
-struct SetPlanePropertyInput
-{
-    // Display ID.
-    display_id: u8,
-    /// Plane ID.
-    plane_id: u8,
-    /// Image type.
-    img_type: u8,
-    /// Display layer.
-    layer: i8,
-    /// Physical width.
-    width: u16,
-    /// Physical height.
-    height: u16,
-    /// Physical horizontal pitch (in bytes).
-    pitch: u16,
-    /// Physical vertical pitch (in rows).
-    vpitch: u16,
-    /// Horizontal offset into the source image (16.16 fixed point).
-    src_x: u32,
-    /// Vertical offset into the source image (16.16 fixed point).
-    src_y: u32,
-    /// Width of the source image (16.16 fixed point).
-    src_w: u32,
-    /// Height of the source image (16.16 fixed point).
-    src_h: u32,
-    /// Horizontal offset into the destination image.
-    dst_x: i16,
-    /// Vertical offset into the destination image.
-    dst_y: i16,
-    /// Width of the destination image.
-    dst_w: u16,
-    /// Height of the destination image.
-    dst_h: u16,
-    /// Opacity.
-    alpha: u8,
-    /// Number of subplanes comprising this plane (always 1 as other subplanes
-    /// are used for composite formats).
-    num_planes: u8,
-    /// Whether this is a composite video plane (always 0).
-    is_vu: u8,
-    /// Color encoding (only relevant for composite video planes).
-    color_encoding: u8,
-    /// DMA addresses of the planes counted in `num_planes`.
-    planes: [u32; 4],
-    /// Rotation and / or flipping constant.
-    transform: u32,
-}
-
 /// Sets up the HDMI controller to output video and audio.
 #[track_caller]
 pub fn init()
 {
-    let vbuf = alloc::<[u32; VID_BUF_LEN]>();
-    unsafe {
-        (*vbuf).iter_mut().for_each(|pix| *pix = 0xFF00FF00);
+    let get_fb_in: u32 = 4;
+    let get_fb_out: [u32; 2];
+    let get_fb_depth_out: u32;
+    mbox! {
+        GET_FB_TAG: get_fb_in => get_fb_out,
+        GET_FB_DEPTH_TAG: _ => get_fb_depth_out,
+    };
+    if get_fb_depth_out == 16 {
+        let fb = get_fb_out[0] as usize as *mut u16;
+        for idx in 0 .. get_fb_out[1] as usize / 2 {
+            unsafe {
+                fb.add(idx).write(0x07E0);
+            }
+        }
+    } else if get_fb_depth_out == 32 {
+        let fb = get_fb_out[0] as usize as *mut u32;
+        for idx in 0 .. get_fb_out[1] as usize / 4 {
+            unsafe {
+                fb.add(idx).write(0xFF00FF00);
+            }
+        }
+    } else {
+        println!("Unsupported pixel depth: {get_fb_depth_out}");
     }
-    let plane_in = SetPlanePropertyInput { display_id: DISP_ID,
-                                           plane_id: 0,
-                                           img_type: IMG_XRGB8888_TYPE,
-                                           layer: 0,
-                                           width: SCREEN_WIDTH as _,
-                                           height: SCREEN_HEIGHT as _,
-                                           pitch: PITCH as _,
-                                           vpitch: VPITCH as _,
-                                           src_x: 0,
-                                           src_y: 0,
-                                           src_w: (SCREEN_WIDTH << 16) as _,
-                                           src_h: (SCREEN_HEIGHT << 16) as _,
-                                           dst_x: 0,
-                                           dst_y: 0,
-                                           dst_w: SCREEN_WIDTH as _,
-                                           dst_h: SCREEN_HEIGHT as _,
-                                           alpha: 0xFF,
-                                           num_planes: 1,
-                                           is_vu: 0,
-                                           color_encoding: 0,
-                                           planes: [vbuf as usize as u32, 0x0, 0x0, 0x0],
-                                           transform: 0 };
-    mbox! {SET_PLANE_TAG: plane_in => _};
     // Wait for the video core to prepare the HDMI registers.
     for _ in 0 .. 1000000 {
         spin_loop()

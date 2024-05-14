@@ -22,3 +22,5 @@ data_start = ADDR(.data);
 data_end = data_start + SIZEOF(.data) + 0xfff & ~0xfff;
 bss_start = ADDR(.bss);
 bss_end = bss_start + SIZEOF(.bss) + 0xfff & ~0xfff;
+heap_start = 0x4000000;
+heap_end = 0x8000000;

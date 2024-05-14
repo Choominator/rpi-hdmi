@@ -12,9 +12,9 @@ root_tt:
 .zero 0x1000
 static_tt:
 .zero 0x1000
-perry_tt:
+low_perry_tt:
 .zero 0x1000
-dma_tt:
+high_perry_tt:
 .zero 0x1000
 static_detail_tt:
 .zero 0x1000
@@ -83,20 +83,19 @@ boot:
     // Initialize the translation tables.
     adrp x0, root_tt
     adrp x1, static_tt
-    adrp x2, perry_tt
-    mov x3, #0x8000 << 48
-    movk x3, #0x403
-    orr x1, x1, x3
-    orr x2, x2, x3
-    stp x1, x2, [x0]
-    adrp x1, dma_tt
-    mov x2, #0x20 << 48
-    movk x2, #0x425
+    mov x2, #0x8000 << 48
+    movk x2, #0x403
     orr x1, x1, x2
-    str x1, [x0, #0x18]
+    str x1, [x0]
+    adrp x1, low_perry_tt
+    orr x1, x1, x2
+    str x1, [x0, 0x200]
+    adrp x1, high_perry_tt
+    orr x1, x1, x2
+    str x1, [x0, 0x208]
     adrp x0, static_tt
     adrp x1, static_detail_tt
-    orr x1, x1, x3
+    orr x1, x1, x2
     str x1, [x0]
     adrp x0, boot_start
     mov x1, x0
@@ -128,20 +127,38 @@ boot:
     adrp x2, bss_end
     sub x2, x2, x1
     bl map
-    mov x0, #0x3c << 24
-    mov x1, #0xfc << 24
+    mov x0, xzr
+    mov x1, #0x10 << 32
     mov x2, #64 << 20
     mov x3, #0x30 << 48
     movk x3, #0x429
-    adrp x4, perry_tt
+    adrp x4, low_perry_tt
     mov x5, #1 << 21
+    bl map
+    mov x0, #0x3c << 24
+    mov x1, #0x10 << 32
+    movk x1, #0x7c00, lsl 16
+    mov x2, #64 << 20
+    adrp x4, high_perry_tt
+    bl map
+    adrp x0, heap_start
+    mov x1, x0
+    adrp x2, heap_end
+    sub x2, x2, x1
+    mov x3, #0x30 << 48
+    movk x3, #0x425
+    adrp x4, static_tt
+    bl map
+    mov x0, 0x3c << 24
+    mov x1, x0
+    mov x2, #64 << 20
     bl map
     // Configure and enable the MMu.
     adrp x0, root_tt
     msr ttbr0_el1, x0
-    mov x0, #0x1 << 32
+    mov x0, #0x2 << 32
     movk x0, #0xa59d, lsl 16
-    movk x0, #0x2520
+    movk x0, #0x251a
     msr tcr_el1, x0
     mov x0, #0x44ff
     msr mair_el1, x0

@@ -5,19 +5,26 @@
 mod dma;
 mod hdmi;
 mod mbox;
+mod scalloc;
 mod uart;
-mod vcalloc;
 
+use core::alloc::Layout;
 use core::arch::{asm, global_asm};
 use core::fmt::Write;
 use core::mem::size_of_val;
 use core::panic::PanicInfo;
-use core::sync::atomic::{compiler_fence, Ordering};
+use core::sync::atomic::{fence, Ordering};
 
 use self::uart::Uart;
 
-/// Size of a cache line.
-const CACHELINE_SIZE: usize = 64;
+/// Properly sized and aligned structure to temporarily store the contents of a
+/// cache line.
+#[repr(align(64))]
+#[derive(Clone, Copy)]
+struct CacheLine
+{
+    data: [u8; 64],
+}
 
 global_asm!(include_str!("boot.s"));
 
@@ -119,32 +126,31 @@ pub fn invalidate_cache<T: Copy>(data: &mut T)
     }
     let start = data as *mut T as usize;
     let end = data as *mut T as usize + size;
-    let algn_start = start & !(CACHELINE_SIZE - 1);
-    let algn_end = (end + (CACHELINE_SIZE - 1)) & !(CACHELINE_SIZE - 1);
+    let layout = Layout::new::<CacheLine>();
+    let algn_start = start & !(layout.align() - 1);
+    let algn_end = end & !(layout.align() - 1);
     // Save the first and last cache lines.
-    let start_cl = unsafe { *(algn_start as *const [u8; CACHELINE_SIZE]) };
-    let end_cl = unsafe { *((algn_end - CACHELINE_SIZE) as *const [u8; CACHELINE_SIZE]) };
+    let start_cl = unsafe { *(algn_start as *const CacheLine) };
+    let end_cl = unsafe { *(algn_end as *const CacheLine) };
     // Invalidate the cache.
-    compiler_fence(Ordering::Release);
-    unsafe { asm!("dsb sy", options(nomem, nostack, preserves_flags)) };
-    for addr in (algn_start .. algn_end).step_by(CACHELINE_SIZE) {
+    fence(Ordering::Release);
+    for addr in (algn_start ..= algn_end).step_by(layout.size()) {
         unsafe { asm!("dc ivac, {addr}", addr = in (reg) addr, options (preserves_flags)) };
     }
-    unsafe { asm!("dsb sy", options(nomem, nostack, preserves_flags)) };
-    compiler_fence(Ordering::Acquire);
+    fence(Ordering::Acquire);
     // Restore the parts of the first and last cachelines shared with this data
     // object.
     if algn_start != start {
         let count = start - algn_start;
         unsafe {
-            (algn_start as *mut u8).copy_from_nonoverlapping(&start_cl[0], count);
+            (algn_start as *mut u8).copy_from_nonoverlapping(&start_cl.data[0], count);
         }
     }
     if algn_end != end {
-        let count = algn_end - end;
-        let idx = CACHELINE_SIZE - count;
+        let count = algn_end + layout.align() - end;
+        let idx = layout.size() - count;
         unsafe {
-            (end as *mut u8).copy_from_nonoverlapping(&end_cl[idx], count);
+            (end as *mut u8).copy_from_nonoverlapping(&end_cl.data[idx], count);
         }
     }
 }
@@ -159,12 +165,11 @@ pub fn cleanup_cache<T: Copy>(data: &T)
     if size == 0 {
         return;
     }
-    let start = data as *const T as usize & !(CACHELINE_SIZE - 1);
-    let end = (data as *const T as usize + size + (CACHELINE_SIZE - 1)) & !(CACHELINE_SIZE - 1);
-    compiler_fence(Ordering::Release);
-    unsafe { asm!("dsb sy", options(nomem, nostack, preserves_flags)) };
-    for addr in (start .. end).step_by(CACHELINE_SIZE) {
-        unsafe { asm!("dc cvac, {addr}", addr = in (reg) addr, options (nomem, nostack, preserves_flags)) };
+    let start = data as *const T as usize;
+    let end = data as *const T as usize + size;
+    let layout = Layout::new::<CacheLine>();
+    fence(Ordering::Release);
+    for addr in (start .. end).step_by(layout.size()) {
+        unsafe { asm!("dc cvac, {addr}", addr = in (reg) addr & !(layout.align() - 1), options (preserves_flags)) };
     }
-    unsafe { asm!("dsb sy", options(nomem, nostack, preserves_flags)) };
 }
