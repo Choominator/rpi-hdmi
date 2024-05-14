@@ -1,10 +1,8 @@
 # Bare Metal Raspberry Pi HDMI Audio
 
-This project contains a working implementation of a bare metal HDMI audio driver for the Raspberry Pi 4.
+This project contains a working implementation of a bare metal HDMI audio driver for the Raspberry Pi 4. An implementation for the Raspberry pi 5 can be found on the `rpi5` branch.
 
 Running this code should result in the Raspberry Pi displaying a 1920x1080 green screen over HDMI 0 and playing a square wave audio tone at 200Hz on one channel and another at 300Hz on the other channel. It works at least with the displays on which I tested it, however since I'm not sure I'm respecting the HDMI specification, I cannot guarantee that it works with every display.
-
-In the future I might include code for the Raspberry Pi 5 as well, if and when I manage to figure how to do it.
 
 ## Compilation
 
@@ -49,7 +47,7 @@ My main source of information for this project is the Video Core Kernel Mode Set
 
 The following is a list of all the Linux kernel source files from which I extracted all the information that I needed to build this driver:
 
-* `arch/arm/boot/dts/bcm2711.dtsi`
+* `arch/arm/boot/dts/broadcom/bcm2711.dtsi`
 * `drivers/gpu/drm/vc4/vc4_regs.h`
 * `drivers/gpu/drm/vc4/vc4_hdmi_regs.h`
 * `drivers/gpu/drm/vc4/vc4_hdmi.c`
